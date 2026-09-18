@@ -1,6 +1,7 @@
 package id.animatedban;
 
 import org.bukkit.BanList;
+import org.bukkit.Particle;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Color;
