@@ -10,6 +10,7 @@ import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Sound;
 import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
@@ -46,7 +47,9 @@ import java.util.UUID;
 public final class AnimatedBanPlugin extends JavaPlugin implements Listener, TabExecutor {
     private static final int MACE_START_Y = 10;
     private static final int IMPACT_TICK = 38; // 1.9 seconds
-    private static final int CLEANUP_TICK = 60; // 3.0 seconds
+    private static final int POST_BAN_TICKS = 60; // 3.0 seconds after the impact/ban
+    private static final int CLEANUP_TICK = IMPACT_TICK + POST_BAN_TICKS;
+    private static final double TEXT_Y = 2.55; // directly above the player's head
 
     private final Set<UUID> frozenPlayers = new HashSet<>();
     private final Set<UUID> activeAnimations = new HashSet<>();
@@ -178,15 +181,19 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
                     return;
                 }
 
-                if (!target.isOnline() || target.isDead() || target.getWorld() != world) {
+                // During a real ban the player is kicked at impact, but the cinematic
+                // must continue in the world for another 3 seconds.
+                if (target.isOnline() && (target.isDead() || target.getWorld() != world)) {
                     cleanupAndFinish();
                     cancel();
                     return;
                 }
 
-                // Hard-lock both position AND rotation every tick. PlayerMoveEvent below
-                // also blocks client movement packets between scheduler ticks.
-                lockPlayer(target, anchor);
+                // Hard-lock while the player is still present. After a real ban the
+                // player is kicked, so the text/bones are allowed to finish in place.
+                if (target.isOnline()) {
+                    lockPlayer(target, anchor);
+                }
 
                 if (tick == 0) {
                     Location maceSpawn = anchor.clone().add(0, MACE_START_Y, 0);
@@ -194,7 +201,7 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
                     spawned.add(hammer);
                     animationEntities.add(hammer);
 
-                    bannedText = spawnBannedText(anchor.clone().add(0, 3.0, 0));
+                    bannedText = spawnBannedText(anchor.clone().add(0, TEXT_Y, 0));
                     spawned.add(bannedText);
                     animationEntities.add(bannedText);
 
@@ -209,9 +216,8 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
                     Location maceLoc = anchor.clone().add(0, y, 0);
                     hammer.teleport(maceLoc);
 
-                    // Spin only around the vertical axis. This cannot tilt the mace.
-                    float yawSpin = (float) (tick * 13.0);
-                    setHammerVertical(hammer, yawSpin);
+                    // Keep the mace perfectly straight: head down, no spin/tilt.
+                    setHammerVertical(hammer);
 
                     // Lightweight falling trail; no explosion particle is used here.
                     if (tick >= 10 && tick % 4 == 0) {
@@ -219,11 +225,19 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
                     }
                 }
 
-                // Keep BANNED visible and rotating for the whole cinematic.
+                // Keep the ban text locked directly above the player. It gently
+                // floats/pulses instead of spinning, so it stays readable.
                 if (bannedText != null && !bannedText.isDead()) {
-                    double bob = Math.sin(tick * 0.12) * 0.08;
-                    bannedText.teleport(anchor.clone().add(0, 3.0 + bob, 0));
-                    bannedText.setRotation(anchor.getYaw() + 180.0f + (tick * 3.0f), 0);
+                    double bob = Math.sin(tick * 0.16) * 0.045;
+                    float pulse = 2.55f + (float) (Math.sin(tick * 0.14) * 0.10);
+                    bannedText.teleport(anchor.clone().add(0, TEXT_Y + bob, 0));
+                    bannedText.setRotation(anchor.getYaw() + 180.0f, 0.0f);
+                    bannedText.setTransformation(new Transformation(
+                            new Vector3f(-0.5f, 0, 0),
+                            new Quaternionf(),
+                            new Vector3f(pulse, pulse, pulse),
+                            new Quaternionf()
+                    ));
                 }
 
                 // The impact gate is intentionally one-shot.
@@ -232,7 +246,7 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
 
                     if (hammer != null) {
                         hammer.teleport(anchor.clone().add(0, 0.25, 0));
-                        setHammerVertical(hammer, 0f);
+                        setHammerVertical(hammer);
                     }
 
                     impact(world, anchor);
@@ -246,17 +260,20 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
 
                 }
 
-                // Everything is gone by 3 seconds. Ban is applied after cleanup.
+                // The actual ban happens on impact. The player is then kicked while
+                // the BANNED text and bone fragments remain for exactly 3 more seconds.
+                if (tick == IMPACT_TICK && banAfterAnimation && target.isOnline()) {
+                    Bukkit.getBanList(BanList.Type.NAME).addBan(
+                            target.getName(), reason, null, sender.getName());
+
+                    target.kickPlayer(ChatColor.DARK_RED + "" + ChatColor.BOLD + "☠ BANNED ☠"
+                            + ChatColor.RESET + "\n" + ChatColor.RED + reason);
+                }
+
                 if (tick >= CLEANUP_TICK) {
                     cleanupAndFinish();
 
-                    if (banAfterAnimation && target.isOnline()) {
-                        Bukkit.getBanList(BanList.Type.NAME).addBan(
-                                target.getName(), reason, null, sender.getName());
-
-                        target.kickPlayer(ChatColor.DARK_RED + "" + ChatColor.BOLD + "BANNED"
-                                + ChatColor.RESET + "\n" + ChatColor.RED + reason);
-                    } else if (!banAfterAnimation) {
+                    if (!banAfterAnimation) {
                         sender.sendMessage(ChatColor.GREEN + "Animatedban test finished.");
                     }
 
@@ -275,15 +292,15 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
             }
 
             private void spawnBones(Location center) {
-                for (int i = 0; i < 18; i++) {
+                for (int i = 0; i < 22; i++) {
                     double angle = (Math.PI * 2.0 * i) / 18.0;
-                    double speed = 0.18 + (i % 5) * 0.045;
+                    double speed = 0.22 + (i % 6) * 0.055;
 
                     // Radial direction means the fragments distribute around the player
                     // instead of all travelling in one direction.
                     Vector velocity = new Vector(
                             Math.cos(angle) * speed,
-                            0.20 + (i % 4) * 0.055,
+                            0.24 + (i % 5) * 0.065,
                             Math.sin(angle) * speed
                     );
 
@@ -312,11 +329,24 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
                     v.setY(v.getY() - 0.018); // gravity
                     v.setZ(v.getZ() * 0.965);
 
-                    // A small floor bounce prevents fragments from floating forever.
-                    if (p.getY() <= world.getMinHeight()) {
-                        p.setY(world.getMinHeight());
-                        v.setY(Math.abs(v.getY()) * 0.35);
-                        v.multiply(0.72);
+                    // Stop at the actual terrain/block surface instead of using the
+                    // world's minimum Y. This prevents bones from clipping through ground.
+                    Block ground = world.getBlockAt(
+                            p.getBlockX(),
+                            (int) Math.floor(p.getY() - 0.05),
+                            p.getBlockZ()
+                    );
+                    if (ground.getType().isSolid() && p.getY() <= ground.getY() + 1.05) {
+                        p.setY(ground.getY() + 1.05);
+                        if (Math.abs(v.getY()) > 0.035) {
+                            v.setY(Math.abs(v.getY()) * 0.22);
+                            v.setX(v.getX() * 0.82);
+                            v.setZ(v.getZ() * 0.82);
+                        } else {
+                            v.setY(0);
+                            v.setX(v.getX() * 0.86);
+                            v.setZ(v.getZ() * 0.86);
+                        }
                     }
 
                     bone.display.teleport(p);
@@ -363,17 +393,15 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
         display.setBillboard(Display.Billboard.FIXED);
         display.setBrightness(new Display.Brightness(15, 15));
         display.setInterpolationDuration(1);
-        setHammerVertical(display, 0f);
+        setHammerVertical(display);
         return display;
     }
 
-    private void setHammerVertical(ItemDisplay display, float yawDegrees) {
-        // The 180-degree X rotation flips the normal upright mace model so the
-        // mace head points down. Y rotation is only a cinematic spin around its
-        // vertical axis and never introduces a left/right tilt.
+    private void setHammerVertical(ItemDisplay display) {
+        // Flip the normal upright mace model exactly 180 degrees on X.
+        // No Y/Z rotation: the mace stays perfectly vertical and points straight down.
         Quaternionf rotation = new Quaternionf()
-                .rotateX((float) Math.PI)
-                .rotateY((float) Math.toRadians(yawDegrees));
+                .rotateX((float) Math.PI);
 
         display.setTransformation(new Transformation(
                 new Vector3f(-0.5f, -0.5f, -0.5f),
@@ -405,21 +433,21 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
     private TextDisplay spawnBannedText(Location loc) {
         TextDisplay display = loc.getWorld().spawn(loc, TextDisplay.class);
 
-        display.setText(ChatColor.RED + "" + ChatColor.BOLD + "BANNED");
+        display.setText(ChatColor.DARK_RED + "" + ChatColor.BOLD + "☠ BANNED ☠");
         display.setBillboard(Display.Billboard.FIXED);
         display.setAlignment(TextDisplay.TextAlignment.CENTER);
         display.setBackgroundColor(Color.fromARGB(0, 0, 0, 0));
         display.setDefaultBackground(false);
         display.setShadowed(true);
         display.setSeeThrough(false);
-        display.setLineWidth(200);
+        display.setLineWidth(240);
         display.setTextOpacity((byte) 255);
         display.setRotation(loc.getYaw() + 180.0f, 0.0f);
 
         display.setTransformation(new Transformation(
                 new Vector3f(-0.5f, 0, 0),
                 new Quaternionf(),
-                new Vector3f(2.6f, 2.6f, 2.6f),
+                new Vector3f(2.55f, 2.55f, 2.55f),
                 new Quaternionf()
         ));
 
