@@ -11,11 +11,15 @@ commands:
     usage: /banhammer <player> [reason]
     permission: animatedban.use
 
+  bn:
+    description: Animatedban test command without banning.
+    usage: /bn test <player>
+    permission: animatedban.use
+
 permissions:
   animatedban.use:
     description: Allows using the banhammer command.
     default: op
-
   animatedban.bypass:
     description: Prevents a player from being targeted.
     default: false
