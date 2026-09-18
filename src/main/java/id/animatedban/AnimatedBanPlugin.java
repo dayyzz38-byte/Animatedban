@@ -1,6 +1,14 @@
 package id.animatedban;
 
-import org.bukkit.*;
+import org.bukkit.BanList;
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
+import org.bukkit.Color;
+import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Sound;
+import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
@@ -10,8 +18,11 @@ import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.event.player.PlayerToggleSprintEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
@@ -27,20 +38,52 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 
 public final class AnimatedBanPlugin extends JavaPlugin implements Listener, TabExecutor {
+    private static final int MACE_START_Y = 10;
+    private static final int IMPACT_TICK = 38; // 1.9 seconds
+    private static final int CLEANUP_TICK = 60; // 3.0 seconds
+
     private final Set<UUID> frozenPlayers = new HashSet<>();
     private final Set<UUID> activeAnimations = new HashSet<>();
+    private final Map<UUID, Location> frozenAnchors = new HashMap<>();
+    private final Set<Entity> animationEntities = new HashSet<>();
     private NamespacedKey animKey;
 
     @Override
     public void onEnable() {
         animKey = new NamespacedKey(this, "animatedban");
         getServer().getPluginManager().registerEvents(this, this);
+
         if (getCommand("banhammer") != null) getCommand("banhammer").setExecutor(this);
         if (getCommand("bn") != null) getCommand("bn").setExecutor(this);
+
         getLogger().info("Animatedban enabled. Author: KingBrezz");
+    }
+
+    @Override
+    public void onDisable() {
+        // Every animation is owned by its BukkitRunnable, so cancelling all plugin
+        // tasks guarantees no animation loop survives a reload/shutdown.
+        Bukkit.getScheduler().cancelTasks(this);
+        for (Entity entity : new HashSet<>(animationEntities)) {
+            if (entity != null && !entity.isDead()) entity.remove();
+        }
+        for (UUID id : new HashSet<>(frozenPlayers)) {
+            Player player = Bukkit.getPlayer(id);
+            if (player != null) {
+                player.setVelocity(new Vector());
+                player.setFallDistance(0);
+                player.setInvulnerable(false);
+            }
+        }
+        animationEntities.clear();
+        frozenAnchors.clear();
+        frozenPlayers.clear();
+        activeAnimations.clear();
     }
 
     @Override
@@ -111,153 +154,198 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
 
         activeAnimations.add(targetId);
         frozenPlayers.add(targetId);
+        frozenAnchors.put(targetId, anchor.clone());
+
         target.setInvulnerable(true);
-        target.setVelocity(new Vector(0, 0, 0));
+        target.setVelocity(new Vector());
 
         new BukkitRunnable() {
             int tick = 0;
+            boolean impacted = false;
+            boolean finished = false;
+
             final List<Entity> spawned = new ArrayList<>();
-            final List<ItemDisplay> bones = new ArrayList<>();
+            final List<BoneFragment> bones = new ArrayList<>();
+
             ItemDisplay hammer;
             TextDisplay bannedText;
 
             @Override
             public void run() {
-                if (!target.isOnline() || target.getWorld() != world) {
-                    cleanup();
-                    finishState();
+                if (finished) {
                     cancel();
                     return;
                 }
 
-                Location center = anchor.clone();
-                center.setYaw(target.getLocation().getYaw());
-                center.setPitch(target.getLocation().getPitch());
-
-                // Freeze the player at the original position while allowing head rotation.
-                if (tick <= 35) {
-                    Location locked = anchor.clone();
-                    locked.setYaw(target.getLocation().getYaw());
-                    locked.setPitch(target.getLocation().getPitch());
-                    target.teleport(locked);
-                    target.setVelocity(new Vector(0, 0, 0));
-                    center = locked;
+                if (!target.isOnline() || target.isDead() || target.getWorld() != world) {
+                    cleanupAndFinish();
+                    cancel();
+                    return;
                 }
 
-                // The mace starts high above the player and falls in a perfectly straight line.
+                // Hard-lock both position AND rotation every tick. PlayerMoveEvent below
+                // also blocks client movement packets between scheduler ticks.
+                lockPlayer(target, anchor);
+
                 if (tick == 0) {
-                    hammer = spawnMace(center.clone().add(0, 11.0, 0));
+                    Location maceSpawn = anchor.clone().add(0, MACE_START_Y, 0);
+                    hammer = spawnMace(maceSpawn);
                     spawned.add(hammer);
-                    world.playSound(center, Sound.ENTITY_BREEZE_CHARGE, 0.65f, 0.55f);
-                    world.playSound(center, Sound.ITEM_MACE_SMASH_GROUND_HEAVY, 0.15f, 1.8f);
-                }
+                    animationEntities.add(hammer);
 
-                if (tick <= 28 && hammer != null) {
-                    double t = tick / 28.0;
-                    double y = 11.0 - (11.0 * t * t);
-                    Location hammerLoc = center.clone().add(0, y, 0);
-                    hammer.teleport(hammerLoc);
-                    // No horizontal spin: it drops like a giant hammer/mace straight down.
-                    setHammerVertical(hammer);
-
-                    if (tick >= 8 && tick % 2 == 0) {
-                        world.spawnParticle(Particle.CLOUD, hammerLoc, 7, .16, .10, .16, .02);
-                        world.spawnParticle(Particle.CRIT, hammerLoc, 3, .10, .10, .10, .03);
-                    }
-                }
-
-                // BOOM: impact, explosion flash, smoke and bone fragments.
-                if (tick == 29) {
-                    if (hammer != null) hammer.teleport(center.clone().add(0, 0.25, 0));
-                    impact(world, center);
-
-                    for (int i = 0; i < 18; i++) {
-                        double angle = (Math.PI * 2.0 * i) / 18.0;
-                        double speed = 0.22 + (i % 5) * 0.045;
-                        ItemDisplay bone = spawnImpactBone(center.clone().add(0, .65 + (i % 3) * .12, 0), i);
-                        bones.add(bone);
-                        spawned.add(bone);
-
-                        Vector velocity = new Vector(
-                                Math.cos(angle) * speed,
-                                0.22 + (i % 4) * 0.065,
-                                Math.sin(angle) * speed
-                        );
-                        bone.setVelocity(velocity);
-                    }
-
-                    bannedText = spawnBannedText(center.clone().add(0, 3.0, 0));
+                    bannedText = spawnBannedText(anchor.clone().add(0, 3.0, 0));
                     spawned.add(bannedText);
+                    animationEntities.add(bannedText);
 
-                    world.playSound(center, Sound.ENTITY_GENERIC_EXPLODE, 1.5f, 0.65f);
-                    world.playSound(center, Sound.ENTITY_ZOMBIE_BREAK_WOODEN_DOOR, 0.7f, 0.5f);
+                    world.playSound(anchor, Sound.ENTITY_BREEZE_CHARGE, 0.65f, 0.55f);
                 }
 
-                // Bones fly outward, tumble and slowly fall.
-                if (tick >= 30 && tick <= 100) {
-                    for (int i = 0; i < bones.size(); i++) {
-                        ItemDisplay bone = bones.get(i);
-                        Vector velocity = bone.getVelocity();
-                        double drag = tick < 62 ? 0.93 : 0.84;
-                        bone.setVelocity(new Vector(
-                                velocity.getX() * drag,
-                                velocity.getY() * 0.94 - 0.012,
-                                velocity.getZ() * drag
-                        ));
-                        bone.setRotation((tick * (11.0f + i * 2.2f)) % 360f, (tick * (7.0f + i)) % 360f);
-                    }
+                // 0.0s -> 1.9s. Ease-in fall: the mace accelerates toward the anchor.
+                // X/Z never change, so the strike remains perfectly vertical.
+                if (tick <= IMPACT_TICK && hammer != null && !impacted) {
+                    double t = tick / (double) IMPACT_TICK;
+                    double y = MACE_START_Y * (1.0 - (t * t));
+                    Location maceLoc = anchor.clone().add(0, y, 0);
+                    hammer.teleport(maceLoc);
 
-                    if (bannedText != null) {
-                        double bob = Math.sin((tick - 29) * 0.14) * 0.10;
-                        bannedText.teleport(center.clone().add(0, 3.0 + bob, 0));
-                    }
+                    // Spin only around the vertical axis. This cannot tilt the mace.
+                    float yawSpin = (float) (tick * 13.0);
+                    setHammerVertical(hammer, yawSpin);
 
-                    if (tick % 2 == 0) {
-                        world.spawnParticle(Particle.CRIT, center.clone().add(0, .8, 0), 9, .9, .55, .9, .08);
-                        world.spawnParticle(Particle.CLOUD, center.clone().add(0, .65, 0), 5, .7, .25, .7, .025);
+                    // Lightweight falling trail; no explosion particle is used here.
+                    if (tick >= 10 && tick % 4 == 0) {
+                        world.spawnParticle(Particle.CLOUD, maceLoc, 4, .10, .08, .10, .01);
                     }
                 }
 
-                if (tick >= 101 && tick <= 115 && tick % 2 == 0) {
-                    world.spawnParticle(Particle.CLOUD, center.clone().add(0, .8, 0), 12, .85, .5, .85, .04);
-                    world.spawnParticle(Particle.SOUL, center.clone().add(0, 1.0, 0), 5, .5, .35, .5, .02);
+                // Keep BANNED visible and rotating for the whole cinematic.
+                if (bannedText != null && !bannedText.isDead()) {
+                    double bob = Math.sin(tick * 0.12) * 0.08;
+                    bannedText.teleport(anchor.clone().add(0, 3.0 + bob, 0));
+                    bannedText.setRotation(anchor.getYaw() + 180.0f + (tick * 3.0f), 0);
                 }
 
-                // Remove every animation entity/effect first, then ban OR finish test.
-                if (tick == 116) {
-                    cleanup();
-                    finishState();
+                // The impact gate is intentionally one-shot.
+                if (tick == IMPACT_TICK && !impacted) {
+                    impacted = true;
 
-                    if (banAfterAnimation) {
+                    if (hammer != null) {
+                        hammer.teleport(anchor.clone().add(0, 0.25, 0));
+                        setHammerVertical(hammer, 0f);
+                    }
+
+                    impact(world, anchor);
+                    spawnBones(anchor);
+                }
+
+                // Bone physics is the only repeating post-impact animation.
+                // There is deliberately NO repeating impact/explosion particle code.
+                if (impacted && tick > IMPACT_TICK) {
+                    updateBones();
+
+                }
+
+                // Everything is gone by 3 seconds. Ban is applied after cleanup.
+                if (tick >= CLEANUP_TICK) {
+                    cleanupAndFinish();
+
+                    if (banAfterAnimation && target.isOnline()) {
                         Bukkit.getBanList(BanList.Type.NAME).addBan(
                                 target.getName(), reason, null, sender.getName());
+
                         target.kickPlayer(ChatColor.DARK_RED + "" + ChatColor.BOLD + "BANNED"
                                 + ChatColor.RESET + "\n" + ChatColor.RED + reason);
-                    } else {
+                    } else if (!banAfterAnimation) {
                         sender.sendMessage(ChatColor.GREEN + "Animatedban test finished.");
                     }
 
                     cancel();
+                    return;
                 }
 
                 tick++;
             }
 
-            private void finishState() {
-                activeAnimations.remove(targetId);
-                frozenPlayers.remove(targetId);
-                if (target.isOnline()) {
-                    target.setInvulnerable(false);
-                    target.setVelocity(new Vector(0, 0, 0));
+            private void lockPlayer(Player player, Location fixed) {
+                Location locked = fixed.clone();
+                player.teleport(locked);
+                player.setVelocity(new Vector());
+                player.setFallDistance(0);
+            }
+
+            private void spawnBones(Location center) {
+                for (int i = 0; i < 18; i++) {
+                    double angle = (Math.PI * 2.0 * i) / 18.0;
+                    double speed = 0.18 + (i % 5) * 0.045;
+
+                    // Radial direction means the fragments distribute around the player
+                    // instead of all travelling in one direction.
+                    Vector velocity = new Vector(
+                            Math.cos(angle) * speed,
+                            0.20 + (i % 4) * 0.055,
+                            Math.sin(angle) * speed
+                    );
+
+                    Location spawn = center.clone().add(
+                            0,
+                            0.65 + (i % 3) * 0.10,
+                            0
+                    );
+
+                    ItemDisplay display = spawnImpactBone(spawn, i);
+                    spawned.add(display);
+                    animationEntities.add(display);
+                    bones.add(new BoneFragment(display, velocity, i));
                 }
             }
 
-            private void cleanup() {
+            private void updateBones() {
+                for (BoneFragment bone : bones) {
+                    if (bone.display.isDead()) continue;
+
+                    Vector v = bone.velocity;
+                    Location p = bone.display.getLocation();
+
+                    p.add(v);
+                    v.setX(v.getX() * 0.965);
+                    v.setY(v.getY() - 0.018); // gravity
+                    v.setZ(v.getZ() * 0.965);
+
+                    // A small floor bounce prevents fragments from floating forever.
+                    if (p.getY() <= world.getMinHeight()) {
+                        p.setY(world.getMinHeight());
+                        v.setY(Math.abs(v.getY()) * 0.35);
+                        v.multiply(0.72);
+                    }
+
+                    bone.display.teleport(p);
+                    bone.display.setRotation(
+                            (tick * (10.0f + bone.index * 1.7f)) % 360f,
+                            (tick * (7.0f + bone.index)) % 360f
+                    );
+                }
+            }
+
+            private void cleanupAndFinish() {
+                if (finished) return;
+                finished = true;
+
                 for (Entity entity : spawned) {
                     if (entity != null && !entity.isDead()) entity.remove();
+                    animationEntities.remove(entity);
                 }
                 spawned.clear();
                 bones.clear();
+
+                activeAnimations.remove(targetId);
+                frozenPlayers.remove(targetId);
+                frozenAnchors.remove(targetId);
+
+                if (target.isOnline()) {
+                    target.setVelocity(new Vector());
+                    target.setFallDistance(0);
+                    target.setInvulnerable(false);
+                }
             }
         }.runTaskTimer(this, 0L, 1L);
     }
@@ -265,21 +353,30 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
     private ItemDisplay spawnMace(Location loc) {
         ItemDisplay display = loc.getWorld().spawn(loc, ItemDisplay.class);
         ItemStack mace = new ItemStack(Material.MACE);
+
         ItemMeta meta = mace.getItemMeta();
         meta.getPersistentDataContainer().set(animKey, PersistentDataType.BYTE, (byte) 1);
         mace.setItemMeta(meta);
+
         display.setItemStack(mace);
         display.setBillboard(Display.Billboard.FIXED);
         display.setBrightness(new Display.Brightness(15, 15));
         display.setInterpolationDuration(1);
-        setHammerVertical(display);
+        setHammerVertical(display, 0f);
         return display;
     }
 
-    private void setHammerVertical(ItemDisplay display) {
+    private void setHammerVertical(ItemDisplay display, float yawDegrees) {
+        // The 180-degree X rotation flips the normal upright mace model so the
+        // mace head points down. Y rotation is only a cinematic spin around its
+        // vertical axis and never introduces a left/right tilt.
+        Quaternionf rotation = new Quaternionf()
+                .rotateX((float) Math.PI)
+                .rotateY((float) Math.toRadians(yawDegrees));
+
         display.setTransformation(new Transformation(
-                new Vector3f(-0.15f, -0.15f, -0.15f),
-                new Quaternionf(),
+                new Vector3f(-0.5f, -0.5f, -0.5f),
+                rotation,
                 new Vector3f(1.75f, 1.75f, 1.75f),
                 new Quaternionf()
         ));
@@ -291,20 +388,24 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
         display.setBillboard(Display.Billboard.FIXED);
         display.setBrightness(new Display.Brightness(15, 15));
         display.setInterpolationDuration(1);
-        float scale = 0.9f + (index % 3) * 0.12f;
+
+        float scale = 0.70f + (index % 3) * 0.10f;
+
         display.setTransformation(new Transformation(
                 new Vector3f(-0.5f, -0.5f, -0.05f),
                 new Quaternionf().rotateZ((float) Math.toRadians(90)),
                 new Vector3f(scale, scale, scale),
                 new Quaternionf()
         ));
+
         return display;
     }
 
     private TextDisplay spawnBannedText(Location loc) {
         TextDisplay display = loc.getWorld().spawn(loc, TextDisplay.class);
+
         display.setText(ChatColor.RED + "" + ChatColor.BOLD + "BANNED");
-        display.setBillboard(Display.Billboard.CENTER);
+        display.setBillboard(Display.Billboard.FIXED);
         display.setAlignment(TextDisplay.TextAlignment.CENTER);
         display.setBackgroundColor(Color.fromARGB(0, 0, 0, 0));
         display.setDefaultBackground(false);
@@ -312,42 +413,65 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
         display.setSeeThrough(false);
         display.setLineWidth(200);
         display.setTextOpacity((byte) 255);
+        display.setRotation(loc.getYaw() + 180.0f, 0.0f);
+
         display.setTransformation(new Transformation(
                 new Vector3f(-0.5f, 0, 0),
                 new Quaternionf(),
                 new Vector3f(2.6f, 2.6f, 2.6f),
                 new Quaternionf()
         ));
+
         return display;
     }
 
     private void impact(World world, Location loc) {
-        Location blast = loc.clone().add(0, 0.2, 0);
+        Location hit = loc.clone().add(0, 0.20, 0);
 
-        world.playSound(loc, Sound.ITEM_MACE_SMASH_GROUND_HEAVY, 2.0f, 0.7f);
-        world.playSound(loc, Sound.ENTITY_GENERIC_EXPLODE, 1.6f, 0.65f);
-        world.spawnParticle(Particle.EXPLOSION_EMITTER, blast, 2, .15, .15, .15, 0);
-        world.spawnParticle(Particle.FLASH, blast, 2, .1, .1, .1, 0);
-        world.spawnParticle(Particle.EXPLOSION, blast, 12, .5, .3, .5, .02);
-        world.spawnParticle(Particle.CRIT, loc.clone().add(0, .8, 0), 110, 1.0, .75, 1.0, .20);
-        world.spawnParticle(Particle.BLOCK, loc.clone().add(0, .15, 0), 120,
-                1.0, .20, 1.0, .0, Material.BONE_BLOCK.createBlockData());
-        world.spawnParticle(Particle.CLOUD, loc.clone().add(0, .6, 0), 55, .9, .5, .9, .10);
-        world.spawnParticle(Particle.SOUL, loc.clone().add(0, 1.0, 0), 30, .8, .8, .8, .05);
+        // All impact sounds are one-shot and use Paper 1.21.11 Bukkit Sound names.
+        world.playSound(loc, Sound.ITEM_MACE_SMASH_GROUND_HEAVY, 2.0f, 0.70f);
+        world.playSound(loc, Sound.ENTITY_ZOMBIE_BREAK_WOODEN_DOOR, 0.75f, 0.55f);
+        world.playSound(loc, Sound.ENTITY_SKELETON_HURT, 0.80f, 0.65f);
+        world.playSound(loc, Sound.ENTITY_GENERIC_EXPLODE, 1.25f, 0.70f);
+
+        // Single lightweight impact burst. No EXPLOSION / EXPLOSION_EMITTER / FLASH.
+        world.spawnParticle(Particle.CRIT, hit.clone().add(0, 0.55, 0),
+                45, 0.75, 0.45, 0.75, 0.10);
+        world.spawnParticle(Particle.CLOUD, hit.clone().add(0, 0.35, 0),
+                22, 0.55, 0.20, 0.55, 0.035);
+        world.spawnParticle(Particle.BLOCK, hit,
+                30, 0.65, 0.12, 0.65, 0.0,
+                Material.BONE_BLOCK.createBlockData());
     }
 
-    @EventHandler
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPlayerMove(PlayerMoveEvent event) {
-        if (!frozenPlayers.contains(event.getPlayer().getUniqueId())) return;
-        Location from = event.getFrom();
-        Location to = event.getTo();
-        if (to == null) return;
+        Player player = event.getPlayer();
+        Location anchor = frozenAnchors.get(player.getUniqueId());
+        if (anchor == null) return;
 
-        // Position is locked; head rotation remains available.
-        to.setX(from.getX());
-        to.setY(from.getY());
-        to.setZ(from.getZ());
-        event.setTo(to);
+        // Hard lock X/Y/Z + yaw/pitch. This blocks ordinary movement packets,
+        // jumping and mouse-look changes without relying on a repeating teleport.
+        event.setTo(anchor.clone());
+        player.setVelocity(new Vector());
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPlayerTeleport(PlayerTeleportEvent event) {
+        Location anchor = frozenAnchors.get(event.getPlayer().getUniqueId());
+        if (anchor == null) return;
+
+        // Redirect all external teleports back to the cinematic anchor.
+        // The animation's own teleport(anchor) is therefore also safe.
+        event.setTo(anchor.clone());
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPlayerToggleSprint(PlayerToggleSprintEvent event) {
+        if (frozenPlayers.contains(event.getPlayer().getUniqueId())) {
+            event.setCancelled(true);
+            event.getPlayer().setSprinting(false);
+        }
     }
 
     @Override
@@ -362,6 +486,27 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener, Tab
                         .toList();
             }
         }
+
+        if (command.getName().equalsIgnoreCase("banhammer") && args.length == 1) {
+            String prefix = args[0].toLowerCase();
+            return Bukkit.getOnlinePlayers().stream()
+                    .map(Player::getName)
+                    .filter(name -> name.toLowerCase().startsWith(prefix))
+                    .toList();
+        }
+
         return List.of();
+    }
+
+    private static final class BoneFragment {
+        private final ItemDisplay display;
+        private final Vector velocity;
+        private final int index;
+
+        private BoneFragment(ItemDisplay display, Vector velocity, int index) {
+            this.display = display;
+            this.velocity = velocity;
+            this.index = index;
+        }
     }
 }
