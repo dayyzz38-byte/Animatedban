@@ -3,7 +3,7 @@ version: 1.0.0
 main: id.animatedban.AnimatedBanPlugin
 api-version: '1.21'
 description: Cinematic animated ban hammer for Paper 1.21.11
-author: Dayyzz
+author: KingBrezz
 
 commands:
   banhammer:
@@ -12,13 +12,13 @@ commands:
     permission: animatedban.use
 
   bn:
-    description: Animatedban test command without banning.
+    description: Test Animatedban animation without banning.
     usage: /bn test <player>
     permission: animatedban.use
 
 permissions:
   animatedban.use:
-    description: Allows using the banhammer command.
+    description: Allows using Animatedban commands.
     default: op
   animatedban.bypass:
     description: Prevents a player from being targeted.
