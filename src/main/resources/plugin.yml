@@ -1,8 +1,8 @@
 name: Animatedban
-version: 1.0.0
+version: 1.1.0
 main: id.animatedban.AnimatedBanPlugin
 api-version: '1.21'
-description: Cinematic animated ban hammer for Paper 1.21.11
+description: Cinematic animated ban hammer for Paper 1.21.11 with impact debris and post-ban effects
 author: KingBrezz
 
 commands:
