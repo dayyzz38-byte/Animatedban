@@ -4,7 +4,6 @@ import org.bukkit.BanList;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Color;
-import org.bukkit.Display;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -78,7 +77,8 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
 
         if (!sender.hasPermission("animatedban.use")) {
             sender.sendMessage(
-                    ChatColor.RED + "You don't have permission to use this command."
+                    ChatColor.RED
+                            + "You don't have permission to use this command."
             );
             return true;
         }
@@ -108,7 +108,9 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
             return true;
         }
 
-        if (activeAnimations.contains(target.getUniqueId())) {
+        UUID uuid = target.getUniqueId();
+
+        if (activeAnimations.contains(uuid)) {
             sender.sendMessage(
                     ChatColor.RED
                             + "Animatedban sedang berjalan pada player tersebut."
@@ -116,16 +118,12 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
             return true;
         }
 
-        String reason;
-
-        if (args.length >= 2) {
-            reason = String.join(
-                    " ",
-                    Arrays.copyOfRange(args, 1, args.length)
-            );
-        } else {
-            reason = "Banned by Animatedban";
-        }
+        String reason = args.length >= 2
+                ? String.join(
+                        " ",
+                        Arrays.copyOfRange(args, 1, args.length)
+                )
+                : "Banned by Animatedban";
 
         playAnimation(target, reason, sender);
 
@@ -139,18 +137,8 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
     ) {
 
         final World world = target.getWorld();
-
-        final Location anchor =
-                target.getLocation().clone();
-
-        final float fixedYaw =
-                anchor.getYaw();
-
-        final float fixedPitch =
-                anchor.getPitch();
-
-        final UUID uuid =
-                target.getUniqueId();
+        final Location anchor = target.getLocation().clone();
+        final UUID uuid = target.getUniqueId();
 
         activeAnimations.add(uuid);
         frozenPlayers.add(uuid);
@@ -162,11 +150,8 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
 
             int tick = 0;
 
-            final List<Entity> spawnedEntities =
-                    new ArrayList<>();
-
-            final List<ItemDisplay> bones =
-                    new ArrayList<>();
+            final List<Entity> spawnedEntities = new ArrayList<>();
+            final List<ItemDisplay> bones = new ArrayList<>();
 
             ItemDisplay hammer;
             TextDisplay logo;
@@ -182,41 +167,37 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                     frozenPlayers.remove(uuid);
                     activeAnimations.remove(uuid);
 
-                    target.setInvulnerable(false);
-
                     cancel();
                     return;
                 }
 
-                Location center =
-                        anchor.clone();
-
-                center.setYaw(fixedYaw);
-                center.setPitch(fixedPitch);
+                Location center = anchor.clone();
 
                 /*
-                 * FREEZE PLAYER
+                 * Freeze player position.
+                 * Rotation tetap mengikuti posisi awal.
                  */
                 if (tick <= 35) {
+                    Location current = target.getLocation();
+
+                    center.setYaw(current.getYaw());
+                    center.setPitch(current.getPitch());
+
                     target.teleport(center);
-                    target.setVelocity(
-                            new Vector(0, 0, 0)
-                    );
+                    target.setVelocity(new Vector(0, 0, 0));
                 }
 
                 /*
-                 * =========================
-                 * PHASE 1
-                 * MACE APPEARS
-                 * =========================
+                 * =====================================
+                 * TICK 0
+                 * SPAWN MACE
+                 * =====================================
                  */
                 if (tick == 0) {
 
-                    hammer =
-                            spawnMace(
-                                    center.clone()
-                                            .add(0, 11.0, 0)
-                            );
+                    hammer = spawnMace(
+                            center.clone().add(0, 11.0, 0)
+                    );
 
                     spawnedEntities.add(hammer);
 
@@ -236,19 +217,15 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                 }
 
                 /*
-                 * =========================
-                 * PHASE 2
+                 * =====================================
+                 * TICK 0-28
                  * MACE FALL
-                 * =========================
+                 * =====================================
                  */
                 if (tick <= 28 && hammer != null) {
 
-                    double progress =
-                            tick / 28.0;
+                    double progress = tick / 28.0;
 
-                    /*
-                     * Accelerating fall.
-                     */
                     double y =
                             11.0
                                     - (11.0
@@ -256,23 +233,16 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                                     * progress);
 
                     Location hammerLocation =
-                            center.clone()
-                                    .add(0, y, 0);
+                            center.clone().add(0, y, 0);
 
-                    hammer.teleport(
-                            hammerLocation
-                    );
+                    hammer.teleport(hammerLocation);
 
                     rotateHammer(
                             hammer,
                             tick * 0.30f
                     );
 
-                    /*
-                     * Falling air particles.
-                     */
-                    if (tick > 8
-                            && tick % 2 == 0) {
+                    if (tick > 8 && tick % 2 == 0) {
 
                         world.spawnParticle(
                                 Particle.CLOUD,
@@ -287,39 +257,33 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                 }
 
                 /*
-                 * =========================
-                 * PHASE 3
+                 * =====================================
+                 * TICK 29
                  * IMPACT
-                 * =========================
+                 * =====================================
                  */
                 if (tick == 29) {
 
                     if (hammer != null) {
 
                         hammer.teleport(
-                                center.clone()
-                                        .add(0, 0.35, 0)
+                                center.clone().add(0, 0.35, 0)
                         );
                     }
 
-                    impact(
-                            world,
-                            center
-                    );
+                    impact(world, center);
 
                     /*
-                     * Bone debris.
+                     * Spawn bone debris.
                      */
                     for (int i = 0; i < 12; i++) {
 
                         double angle =
-                                (Math.PI * 2.0 * i)
-                                        / 12.0;
+                                (Math.PI * 2.0 * i) / 12.0;
 
                         double speed =
                                 0.16
-                                        + (i % 4)
-                                        * 0.035;
+                                        + (i % 4) * 0.035;
 
                         ItemDisplay bone =
                                 spawnImpactBone(
@@ -333,30 +297,20 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
 
                         Vector velocity =
                                 new Vector(
-                                        Math.cos(angle)
-                                                * speed,
-
-                                        0.16
-                                                + (i % 3)
-                                                * 0.055,
-
-                                        Math.sin(angle)
-                                                * speed
+                                        Math.cos(angle) * speed,
+                                        0.16 + (i % 3) * 0.055,
+                                        Math.sin(angle) * speed
                                 );
 
-                        bone.setVelocity(
-                                velocity
-                        );
+                        bone.setVelocity(velocity);
                     }
 
                     /*
-                     * Skull / X logo.
+                     * Skull/X logo.
                      */
-                    logo =
-                            spawnLogo(
-                                    center.clone()
-                                            .add(0, 3.25, 0)
-                            );
+                    logo = spawnLogo(
+                            center.clone().add(0, 3.25, 0)
+                    );
 
                     spawnedEntities.add(logo);
 
@@ -376,20 +330,16 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                 }
 
                 /*
-                 * =========================
-                 * PHASE 4
-                 * DEBRIS + LOGO
-                 * =========================
+                 * =====================================
+                 * TICK 30-100
+                 * BONES + LOGO
+                 * =====================================
                  */
-                if (tick >= 30
-                        && tick <= 100) {
+                if (tick >= 30 && tick <= 100) {
 
-                    for (int i = 0;
-                         i < bones.size();
-                         i++) {
+                    for (int i = 0; i < bones.size(); i++) {
 
-                        ItemDisplay bone =
-                                bones.get(i);
+                        ItemDisplay bone = bones.get(i);
 
                         Vector velocity =
                                 bone.getVelocity();
@@ -419,36 +369,29 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                     if (logo != null) {
 
                         float spin =
-                                (tick - 29)
-                                        * 0.15f;
+                                (tick - 29) * 0.15f;
 
                         logo.teleport(
-                                center.clone()
-                                        .add(
-                                                0,
-                                                3.25
-                                                        + Math.sin(spin)
-                                                        * 0.12,
-                                                0
-                                        )
+                                center.clone().add(
+                                        0,
+                                        3.25
+                                                + Math.sin(spin)
+                                                * 0.12,
+                                        0
+                                )
                         );
 
                         logo.setRotation(
-                                (float)
-                                        Math.toDegrees(spin),
+                                (float) Math.toDegrees(spin),
                                 0
                         );
                     }
 
-                    /*
-                     * Impact particles.
-                     */
                     if (tick % 3 == 0) {
 
                         world.spawnParticle(
                                 Particle.CRIT,
-                                center.clone()
-                                        .add(0, 0.9, 0),
+                                center.clone().add(0, 0.9, 0),
                                 7,
                                 0.8,
                                 0.55,
@@ -459,10 +402,10 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                 }
 
                 /*
-                 * =========================
-                 * PHASE 5
+                 * =====================================
+                 * TICK 101-115
                  * FINAL SMOKE
-                 * =========================
+                 * =====================================
                  */
                 if (tick >= 101
                         && tick <= 115
@@ -470,8 +413,7 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
 
                     world.spawnParticle(
                             Particle.CLOUD,
-                            center.clone()
-                                    .add(0, 0.8, 0),
+                            center.clone().add(0, 0.8, 0),
                             10,
                             0.8,
                             0.5,
@@ -481,8 +423,7 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
 
                     world.spawnParticle(
                             Particle.SOUL,
-                            center.clone()
-                                    .add(0, 1.0, 0),
+                            center.clone().add(0, 1.0, 0),
                             4,
                             0.5,
                             0.35,
@@ -492,10 +433,10 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                 }
 
                 /*
-                 * =========================
-                 * PHASE 6
-                 * CLEANUP + BAN
-                 * =========================
+                 * =====================================
+                 * TICK 116
+                 * CLEANUP -> BAN -> KICK
+                 * =====================================
                  */
                 if (tick == 116) {
 
@@ -504,8 +445,8 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                     frozenPlayers.remove(uuid);
                     activeAnimations.remove(uuid);
 
-                    target.setGlowing(false);
                     target.setInvulnerable(false);
+                    target.setGlowing(false);
 
                     Bukkit.getBanList(
                             BanList.Type.NAME
@@ -535,8 +476,7 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
 
             private void cleanup() {
 
-                for (Entity entity :
-                        spawnedEntities) {
+                for (Entity entity : spawnedEntities) {
 
                     if (entity != null
                             && !entity.isDead()) {
@@ -557,13 +497,11 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
     }
 
     /*
-     * =========================
-     * SPAWN MACE
-     * =========================
+     * =====================================
+     * MACE
+     * =====================================
      */
-    private ItemDisplay spawnMace(
-            Location location
-    ) {
+    private ItemDisplay spawnMace(Location location) {
 
         ItemDisplay display =
                 location.getWorld()
@@ -597,10 +535,7 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
         );
 
         display.setBrightness(
-                new Display.Brightness(
-                        15,
-                        15
-                )
+                new Display.Brightness(15, 15)
         );
 
         display.setInterpolationDuration(2);
@@ -612,15 +547,12 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                                 -0.15f,
                                 -0.15f
                         ),
-
                         new Quaternionf(),
-
                         new Vector3f(
                                 1.65f,
                                 1.65f,
                                 1.65f
                         ),
-
                         new Quaternionf()
                 )
         );
@@ -629,9 +561,9 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
     }
 
     /*
-     * =========================
+     * =====================================
      * ROTATE MACE
-     * =========================
+     * =====================================
      */
     private void rotateHammer(
             ItemDisplay display,
@@ -645,25 +577,22 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                                 -0.15f,
                                 -0.15f
                         ),
-
                         new Quaternionf()
                                 .rotateY(angle),
-
                         new Vector3f(
                                 1.65f,
                                 1.65f,
                                 1.65f
                         ),
-
                         new Quaternionf()
                 )
         );
     }
 
     /*
-     * =========================
-     * SPAWN BONE
-     * =========================
+     * =====================================
+     * BONE
+     * =====================================
      */
     private ItemDisplay spawnImpactBone(
             Location location,
@@ -686,10 +615,7 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
         );
 
         display.setBrightness(
-                new Display.Brightness(
-                        15,
-                        15
-                )
+                new Display.Brightness(15, 15)
         );
 
         display.setInterpolationDuration(1);
@@ -703,19 +629,16 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                                 -0.5f,
                                 -0.05f
                         ),
-
                         new Quaternionf()
                                 .rotateZ(
                                         (float)
                                                 Math.toRadians(90)
                                 ),
-
                         new Vector3f(
                                 scale,
                                 scale,
                                 scale
                         ),
-
                         new Quaternionf()
                 )
         );
@@ -724,13 +647,11 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
     }
 
     /*
-     * =========================
-     * SPAWN LOGO
-     * =========================
+     * =====================================
+     * LOGO
+     * =====================================
      */
-    private TextDisplay spawnLogo(
-            Location location
-    ) {
+    private TextDisplay spawnLogo(Location location) {
 
         TextDisplay display =
                 location.getWorld()
@@ -764,16 +685,10 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
         );
 
         display.setDefaultBackground(false);
-
         display.setShadowed(true);
-
         display.setSeeThrough(false);
-
         display.setLineWidth(200);
-
-        display.setTextOpacity(
-                (byte) 255
-        );
+        display.setTextOpacity((byte) 255);
 
         display.setTransformation(
                 new Transformation(
@@ -782,15 +697,12 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                                 0,
                                 0
                         ),
-
                         new Quaternionf(),
-
                         new Vector3f(
                                 2.3f,
                                 2.3f,
                                 2.3f
                         ),
-
                         new Quaternionf()
                 )
         );
@@ -799,9 +711,9 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
     }
 
     /*
-     * =========================
-     * PLAYER FREEZE
-     * =========================
+     * =====================================
+     * FREEZE PLAYER
+     * =====================================
      */
     @EventHandler
     public void onPlayerMove(
@@ -828,8 +740,8 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
         }
 
         /*
-         * Block position changes.
-         * Allow normal head rotation.
+         * Block X/Y/Z movement.
+         * Rotation tetap boleh.
          */
         to.setX(from.getX());
         to.setY(from.getY());
@@ -839,9 +751,9 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
     }
 
     /*
-     * =========================
+     * =====================================
      * IMPACT EFFECT
-     * =========================
+     * =====================================
      */
     private void impact(
             World world,
@@ -864,15 +776,13 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
 
         world.spawnParticle(
                 Particle.EXPLOSION_EMITTER,
-                location.clone()
-                        .add(0, 0.2, 0),
+                location.clone().add(0, 0.2, 0),
                 1
         );
 
         world.spawnParticle(
                 Particle.CRIT,
-                location.clone()
-                        .add(0, 0.8, 0),
+                location.clone().add(0, 0.8, 0),
                 80,
                 0.8,
                 0.8,
@@ -882,20 +792,18 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
 
         world.spawnParticle(
                 Particle.BLOCK,
-                location.clone()
-                        .add(0, 0.15, 0),
+                location.clone().add(0, 0.15, 0),
                 80,
                 0.8,
                 0.15,
                 0.8,
-                Material.BONE_BLOCK
-                        .createBlockData()
+                0.0,
+                Material.BONE_BLOCK.createBlockData()
         );
 
         world.spawnParticle(
                 Particle.CLOUD,
-                location.clone()
-                        .add(0, 0.5, 0),
+                location.clone().add(0, 0.5, 0),
                 35,
                 0.8,
                 0.4,
@@ -905,8 +813,7 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
 
         world.spawnParticle(
                 Particle.SOUL,
-                location.clone()
-                        .add(0, 1, 0),
+                location.clone().add(0, 1.0, 0),
                 25,
                 0.8,
                 0.8,
@@ -914,4 +821,4 @@ public final class AnimatedBanPlugin extends JavaPlugin implements Listener {
                 0.04
         );
     }
-  }
+                }
