@@ -1,0 +1,21 @@
+name: Animatedban
+version: 1.0.0
+main: id.animatedban.AnimatedBanPlugin
+api-version: '1.21'
+description: Cinematic animated ban hammer for Paper 1.21.11
+author: Dayyzz
+
+commands:
+  banhammer:
+    description: Ban a player with the Animatedban cinematic.
+    usage: /banhammer <player> [reason]
+    permission: animatedban.use
+
+permissions:
+  animatedban.use:
+    description: Allows using the banhammer command.
+    default: op
+
+  animatedban.bypass:
+    description: Prevents a player from being targeted.
+    default: false
